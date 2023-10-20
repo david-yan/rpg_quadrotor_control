@@ -1,5 +1,6 @@
 #pragma once
 
+#include <kr_tracker_msgs/PolyTrackerAction.h>
 #include <quadrotor_common/geometry_eigen_conversions.h>
 #include <quadrotor_common/math_common.h>
 #include <quadrotor_common/parameter_helper.h>
@@ -85,6 +86,10 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
   control_command_input_sub_ = nh_.subscribe(
       "autopilot/control_command_input", 1,
       &AutoPilot<Tcontroller, Tparams>::controlCommandInputCallback, this);
+
+  poly_tracker_goal_sub_ = nh_.subscribe(
+    "/kingfisher/trackers_manager/poly_tracker/PolyTracker/goal", 1,
+    &AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback, this);
 
   start_sub_ =
       nh_.subscribe("autopilot/start", 1,
@@ -313,6 +318,12 @@ void AutoPilot<Tcontroller, Tparams>::goToPoseThread() {
     // Go to pose mutex is unlocked because it goes out of scope here
   }
 }
+
+template <typename Tcontroller, typename Tparams>
+void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(
+  const kr_tracker_msgs::PolyTrackerActionGoal& msg) {
+    ROS_INFO("%s", msg);
+  }
 
 template <typename Tcontroller, typename Tparams>
 void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(

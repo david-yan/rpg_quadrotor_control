@@ -22,6 +22,8 @@
 #include <state_predictor/state_predictor.h>
 #include <std_msgs/Empty.h>
 
+#include <kr_tracker_msgs/PolyTrackerAction.h>
+
 #include "autopilot/autopilot_states.h"
 
 namespace autopilot {
@@ -76,6 +78,8 @@ class AutoPilot {
       const quadrotor_common::QuadStateEstimate& state_estimate,
       ros::Duration* trajectory_execution_left_duration,
       int* trajectories_left_in_queue);
+  void polyTrackerGoalCallback(
+    const kr_tracker_msgs::PolyTrackerActionGoal& msg);
 
   void setAutoPilotState(const States& new_state);
   void setAutoPilotStateForced(const States& new_state);
@@ -129,6 +133,8 @@ class AutoPilot {
   ros::Subscriber force_hover_sub_;
   ros::Subscriber land_sub_;
   ros::Subscriber off_sub_;
+
+  ros::Subscriber poly_tracker_goal_sub_;
 
   state_predictor::StatePredictor state_predictor_;
 
