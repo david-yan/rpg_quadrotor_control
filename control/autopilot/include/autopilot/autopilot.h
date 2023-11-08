@@ -23,6 +23,7 @@
 #include <std_msgs/Empty.h>
 
 #include <kr_tracker_msgs/PolyTrackerAction.h>
+#include <kr_trackers/traj_data.hpp>
 
 #include "autopilot/autopilot_states.h"
 
@@ -79,7 +80,7 @@ class AutoPilot {
       ros::Duration* trajectory_execution_left_duration,
       int* trajectories_left_in_queue);
   void polyTrackerGoalCallback(
-    const kr_tracker_msgs::PolyTrackerActionGoal& msg);
+    const kr_tracker_msgs::PolyTrackerActionGoal::ConstPtr& msg);
 
   void setAutoPilotState(const States& new_state);
   void setAutoPilotStateForced(const States& new_state);
@@ -143,6 +144,10 @@ class AutoPilot {
 
   quadrotor_common::TrajectoryPoint reference_state_;
   quadrotor_common::Trajectory reference_trajectory_;
+
+  // Polynomial trajectory variables
+  bool traj_set_;
+  std::shared_ptr<TrajData> current_trajectory_, next_trajectory_;
 
   // Values received from callbacks
   quadrotor_common::QuadStateEstimate received_state_est_;

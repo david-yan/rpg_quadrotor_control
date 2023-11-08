@@ -1,12 +1,32 @@
 #pragma once
 
 #include <kr_tracker_msgs/PolyTrackerAction.h>
+#include <kr_trackers/traj_data.hpp>
+
 #include <quadrotor_common/geometry_eigen_conversions.h>
 #include <quadrotor_common/math_common.h>
 #include <quadrotor_common/parameter_helper.h>
 #include <quadrotor_msgs/AutopilotFeedback.h>
 #include <trajectory_generation_helper/heading_trajectory_helper.h>
 #include <trajectory_generation_helper/polynomial_trajectory_helper.h>
+
+// traj data
+struct TrajData
+{
+  /* info of generated traj */
+  double traj_dur_ = 0, traj_yaw_dur_ = 0;
+  ros::Time start_time_;
+  int dim_;
+
+
+  traj_opt::Trajectory2D traj_2d_;
+  traj_opt::Trajectory3D traj_3d_;
+  traj_opt::Trajectory4D traj_with_yaw_;
+  traj_opt::Trajectory1D traj_yaw_;
+  bool has_solo_yaw_traj_ = false;
+
+  traj_opt::DiscreteStates traj_discrete_;
+};
 
 namespace autopilot {
 
@@ -139,6 +159,10 @@ AutoPilot<Tcontroller, Tparams>::~AutoPilot() {
   stop_watchdog_thread_ = true;
   // Wait for watchdog thread to finish
   watchdog_thread_.join();
+
+  traj_set_ = false;
+  current_trajectory_.reset(new TrajData);
+  next_trajectory_.reset(new TrajData);  
 
   // Send out an off command to ensure quadrotor is off
   quadrotor_common::ControlCommand control_cmd;
@@ -320,12 +344,6 @@ void AutoPilot<Tcontroller, Tparams>::goToPoseThread() {
 }
 
 template <typename Tcontroller, typename Tparams>
-void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(
-  const kr_tracker_msgs::PolyTrackerActionGoal& msg) {
-    ROS_INFO("%s", msg);
-  }
-
-template <typename Tcontroller, typename Tparams>
 void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(
     const nav_msgs::Odometry::ConstPtr& msg) {
   if (destructor_invoked_) {
@@ -428,6 +446,9 @@ void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(
       control_cmd.zero();
       control_cmd.armed = true;
       control_cmd.collective_thrust = kGravityAcc_;
+      break;
+    case States::POLY_TRAJ_CONTROL:
+      control_cmd.zero();
       break;
   }
   const ros::Duration control_computation_time =
@@ -578,6 +599,66 @@ void AutoPilot<Tcontroller, Tparams>::referenceStateCallback(
   reference_state_input_ = *msg;
 
   // Mutex is unlocked because it goes out of scope here
+}
+
+
+template <typename Tcontroller, typename Tparams>
+void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_msgs::PolyTrackerActionGoal::ConstPtr& msg) {
+
+  if (destructor_invoked_) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> main_lock(main_mutex_);
+
+  // ROS_INFO("%s", msg._dt_type);
+  const auto goal = msg->goal;
+  ROS_INFO("coeff size: %d", goal.seg_x.size());
+  if (goal.seg_x.size() == 0) {
+    return;
+  }
+  size_t deg = goal.seg_x[0].degree;
+  ROS_INFO("polynomial msg with degree: %d", deg);
+  
+  // for(size_t i = 0; i < goal.seg_z.size(); ++i) {
+  //   const auto coeffs = goal.seg_z[i].coeffs;
+  //   std::stringstream coeffs_buf;
+  //   coeffs_buf << "[";
+  //   for (size_t j = 0; j < coeffs.size(); ++j) {
+  //     if (j != 0) {
+  //       coeffs_buf << ", ";
+  //     }
+  //     coeffs_buf << coeffs[j];
+  //   }
+  //   coeffs_buf << "]";
+  //   std::string coeffs_str = coeffs_buf.str();
+  //   ROS_INFO("seg_z coeff: %s", coeffs_str.c_str());
+  // }
+
+  // set up the trajectory
+  double total_duration = 0.0;
+  for(size_t i = 0; i < msg->seg_x.size(); ++i)
+  {
+    Eigen::MatrixXd Coeffs(next_trajectory_->dim_, deg + 1);
+    float dt = msg->seg_x[i].dt;
+    total_duration += dt;
+
+    for(size_t j = 0; j < deg + 1; ++j) {
+      Coeffs(0, j) = msg->seg_x[i].coeffs[j];
+      Coeffs(1, j) = msg->seg_y[i].coeffs[j];
+    }
+  }
+
+  /* Store data */
+  next_trajectory_->start_time_ = msg->t_start;
+  next_trajectory_->traj_dur_   = total_duration;
+  traj_set_ = true;
+
+  ROS_INFO("PolyTracker: Set the poly trajectory");
+
+  if (autopilot_state_ != States::POLY_TRAJ_CONTROL) {
+    setAutoPilotState(States::POLY_TRAJ_CONTROL);
+  }
 }
 
 template <typename Tcontroller, typename Tparams>
@@ -1072,6 +1153,16 @@ template <typename Tcontroller, typename Tparams>
 quadrotor_common::ControlCommand
 AutoPilot<Tcontroller, Tparams>::executeTrajectory(
     const quadrotor_common::QuadStateEstimate& state_estimate,
+    ros::Duration* trajectory_execution_left_duration) {
+  const ros::Time time_now = ros::Time::now();
+
+
+}
+
+template <typename Tcontroller, typename Tparams>
+quadrotor_common::ControlCommand
+AutoPilot<Tcontroller, Tparams>::executeTrajectory(
+    const quadrotor_common::QuadStateEstimate& state_estimate,
     ros::Duration* trajectory_execution_left_duration,
     int* trajectories_left_in_queue) {
   const ros::Time time_now = ros::Time::now();
@@ -1257,6 +1348,9 @@ void AutoPilot<Tcontroller, Tparams>::setAutoPilotStateForced(
     case States::RC_MANUAL:
       state_name = "RC_MANUAL";
       break;
+    case States::POLY_TRAJ_CONTROL:
+      state_name = "POLY_TRAJ_CONTROL";
+      break;
   }
   ROS_INFO("[%s] Switched to %s state", pnh_.getNamespace().c_str(),
            state_name.c_str());
@@ -1340,6 +1434,9 @@ void AutoPilot<Tcontroller, Tparams>::publishAutopilotFeedback(
       break;
     case States::RC_MANUAL:
       fb_msg.autopilot_state = fb_msg.RC_MANUAL;
+      break;
+    case States::POLY_TRAJ_CONTROL:
+      fb_msg.autopilot_state = fb_msg.TRAJECTORY_CONTROL;
       break;
   }
   fb_msg.control_command_delay = control_command_delay;
