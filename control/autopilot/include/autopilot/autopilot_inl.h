@@ -10,6 +10,8 @@
 #include <trajectory_generation_helper/heading_trajectory_helper.h>
 #include <trajectory_generation_helper/polynomial_trajectory_helper.h>
 
+#include <tf/transform_datatypes.h>
+
 // traj data
 struct TrajData
 {
@@ -619,6 +621,16 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
   }
   size_t deg = goal.seg_x[0].degree;
   ROS_INFO("polynomial msg with degree: %d", deg);
+
+  // decide the dimension
+  if(msg->seg_z.size() <= 0)
+  {
+    next_trajectory_->dim_ = 2;
+  }
+  else if(msg->seg_yaw.size() <= 0)
+  {
+    next_trajectory_->dim_ = 3;
+  }
   
   // for(size_t i = 0; i < goal.seg_z.size(); ++i) {
   //   const auto coeffs = goal.seg_z[i].coeffs;
@@ -637,6 +649,8 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
 
   // set up the trajectory
   double total_duration = 0.0;
+  std::vector<traj_opt::Piece<2>> segs_2d;
+  std::vector<traj_opt::Piece<3>> segs_3d;
   for(size_t i = 0; i < msg->seg_x.size(); ++i)
   {
     Eigen::MatrixXd Coeffs(next_trajectory_->dim_, deg + 1);
@@ -647,12 +661,41 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
       Coeffs(0, j) = msg->seg_x[i].coeffs[j];
       Coeffs(1, j) = msg->seg_y[i].coeffs[j];
     }
+    switch(next_trajectory_->dim_)
+    {
+      case 2:
+      {
+        traj_opt::Piece<2> seg(traj_opt::STANDARD, Coeffs, dt);
+        segs_2d.push_back(seg);
+        break;
+      }
+      case 3:
+      {
+        for(size_t j = 0; j < deg + 1; ++j)
+        {
+          Coeffs(2, j) = msg->seg_z[i].coeffs[j];
+        }
+        traj_opt::Piece<3> seg(traj_opt::STANDARD, Coeffs, dt);
+        segs_3d.push_back(seg);
+        break;
+      }
+    }
   }
 
   /* Store data */
   next_trajectory_->start_time_ = msg->t_start;
   next_trajectory_->traj_dur_   = total_duration;
   traj_set_ = true;
+
+  switch(next_trajectory_->dim_)
+  {
+    case 2:
+      next_trajectory_->traj_2d_ = traj_opt::Trajectory2D(segs_2d, total_duration);
+      break;
+    case 3:
+      next_trajectory_->traj_3d_ = traj_opt::Trajectory3D(segs_3d, total_duration);
+      break;
+  }
 
   ROS_INFO("PolyTracker: Set the poly trajectory");
 
@@ -1151,12 +1194,71 @@ AutoPilot<Tcontroller, Tparams>::followReference(
 
 template <typename Tcontroller, typename Tparams>
 quadrotor_common::ControlCommand
-AutoPilot<Tcontroller, Tparams>::executeTrajectory(
+AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
     const quadrotor_common::QuadStateEstimate& state_estimate,
     ros::Duration* trajectory_execution_left_duration) {
   const ros::Time time_now = ros::Time::now();
 
+  quadrotor_common::ControlCommand command;
 
+  if (!traj_set_) {
+    setAutoPilotStateForced(States::HOVER);
+    command.zero();
+    return command;
+  }
+
+  cur_pos_(0) = state_estimate->position(0);
+  cur_pos_(1) = state_estimate->position(1);
+  cur_pos_(2) = state_estimate->position(2);
+  cur_yaw_ = tf::getYaw(state_estimate->orientation);
+
+  if(next_trajectory_ != NULL && (time_now - next_trajectory_->start_time_).toSec() >= 0.0)
+  {
+    current_trajectory_ = next_trajectory_;
+    next_trajectory_ = NULL;
+  }
+
+  double t_cur = (time_now - current_trajectory_->start_time_).toSec();
+  Eigen::Vector3d pos(Eigen::Vector3d::Zero()), vel(Eigen::Vector3d::Zero()), acc(Eigen::Vector3d::Zero());
+  std::pair<double, double> yaw_yawdot(last_yaw_, 0.0);
+  Eigen::VectorXd wp(current_trajectory_->dim_), dwp(current_trajectory_->dim_), ddwp(current_trajectory_->dim_);
+
+  if(t_cur < current_trajectory_->traj_dur_ && t_cur >= 0.0) {
+    switch(current_trajectory_->dim_)
+    {
+      case 2:
+      {
+        wp  = current_trajectory_->traj_2d_.getPos(t_cur);
+        dwp = current_trajectory_->traj_2d_.getVel(t_cur);
+        pos.head(2) = wp;
+        pos(2) = last_goal_(2);
+        vel.head(2) = dwp;
+        break;
+      }
+      case 3:
+      {
+        pos = current_trajectory_->traj_3d_.getPos(t_cur);
+        vel = current_trajectory_->traj_3d_.getVel(t_cur);
+        acc = current_trajectory_->traj_3d_.getAcc(t_cur);
+
+        if(current_trajectory_->has_solo_yaw_traj_)
+        {
+          yaw_yawdot.first = current_trajectory_->traj_yaw_.getPos(t_cur)(0);
+          yaw_yawdot.second = range(current_trajectory_->traj_yaw_.getVel(t_cur)(0));
+        }
+        else
+        {
+          /*** calculate yaw ***/
+          Eigen::Vector3d dir = t_cur + time_forward_ <= current_trajectory_->traj_dur_ ? 
+                                                        current_trajectory_->traj_3d_.getPos(t_cur + time_forward_) - pos :
+                                                        current_trajectory_->traj_3d_.getPos(current_trajectory_->traj_dur_) - pos;
+          yaw_yawdot = calculate_yaw(dir, (time_now - time_last_).toSec());
+        }
+
+        break;
+      }
+    }
+  }
 }
 
 template <typename Tcontroller, typename Tparams>

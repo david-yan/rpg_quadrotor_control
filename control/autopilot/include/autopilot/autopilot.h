@@ -79,6 +79,9 @@ class AutoPilot {
       const quadrotor_common::QuadStateEstimate& state_estimate,
       ros::Duration* trajectory_execution_left_duration,
       int* trajectories_left_in_queue);
+  quadrotor_common::ControlCommand executePolyTrajectory(
+      const quadrotor_common::QuadStateEstimate& state_estimate,
+      ros::Duration* trajectory_execution_left_duration);
   void polyTrackerGoalCallback(
     const kr_tracker_msgs::PolyTrackerActionGoal::ConstPtr& msg);
 
@@ -148,6 +151,10 @@ class AutoPilot {
   // Polynomial trajectory variables
   bool traj_set_;
   std::shared_ptr<TrajData> current_trajectory_, next_trajectory_;
+  /*** odom related ***/
+  double cur_yaw_, last_yaw_ = 0.0, last_yawdot_ = 0.0;
+  Eigen::Vector3d cur_pos_, last_pos_, last_goal_;
+  bool have_last_goal_ = false;
 
   // Values received from callbacks
   quadrotor_common::QuadStateEstimate received_state_est_;
