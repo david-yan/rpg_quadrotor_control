@@ -1,7 +1,7 @@
 #pragma once
 
 #include <kr_tracker_msgs/PolyTrackerAction.h>
-#include <kr_trackers/traj_data.hpp>
+#include <traj_data.hpp>
 
 #include <quadrotor_common/geometry_eigen_conversions.h>
 #include <quadrotor_common/math_common.h>
@@ -11,24 +11,7 @@
 #include <trajectory_generation_helper/polynomial_trajectory_helper.h>
 
 #include <tf/transform_datatypes.h>
-
-// traj data
-struct TrajData
-{
-  /* info of generated traj */
-  double traj_dur_ = 0, traj_yaw_dur_ = 0;
-  ros::Time start_time_;
-  int dim_;
-
-
-  traj_opt::Trajectory2D traj_2d_;
-  traj_opt::Trajectory3D traj_3d_;
-  traj_opt::Trajectory4D traj_with_yaw_;
-  traj_opt::Trajectory1D traj_yaw_;
-  bool has_solo_yaw_traj_ = false;
-
-  traj_opt::DiscreteStates traj_discrete_;
-};
+#include "autopilot.h"
 
 namespace autopilot {
 
@@ -170,6 +153,60 @@ AutoPilot<Tcontroller, Tparams>::~AutoPilot() {
   quadrotor_common::ControlCommand control_cmd;
   control_cmd.zero();
   publishControlCommand(control_cmd);
+}
+
+template <typename Tcontroller, typename Tparams>
+inline std::pair<double, double> AutoPilot<Tcontroller, Tparams>::calculate_yaw(
+    Eigen::Vector3d& dir, double dt, double last_yaw, double last_yawdot) {
+  std::pair<double, double> yaw_yawdot(0, 0);
+  double yaw_temp = dir.norm() > 0.1 ? atan2(dir(1), dir(0)) : last_yaw;
+  double yawdot = 0;
+  double d_yaw;
+
+  d_yaw = range(yaw_temp - last_yaw);
+
+
+
+  const double YDM = d_yaw >= 0 ? max_dyaw_ : -max_dyaw_;
+  const double YDDM = d_yaw >= 0 ? max_ddyaw_ : -max_ddyaw_;
+  double d_yaw_max;
+  if(fabs(last_yawdot + dt * YDDM) <= fabs(YDM))
+  {
+    d_yaw_max = last_yawdot * dt + 0.5 * YDDM * dt * dt;
+  }
+  else
+  {
+    double t1 = (YDM - last_yawdot) / YDDM;
+    d_yaw_max = ((dt - t1) + dt) * (YDM - last_yawdot) / 2.0;
+  }
+
+  if(fabs(d_yaw) > fabs(d_yaw_max))
+  {
+    d_yaw = d_yaw_max;
+  }
+
+  yawdot = d_yaw / dt;
+  double yaw = last_yaw + d_yaw;
+
+  yaw_yawdot.first = yaw;
+  yaw_yawdot.second = yawdot;
+
+  return yaw_yawdot;
+}
+
+template <typename Tcontroller, typename Tparams>
+double AutoPilot<Tcontroller, Tparams>::range(double angle) {
+  // range the angle into (-PI, PI]
+  double psi = angle;
+  while(psi > M_PI)
+  {
+    psi -= 2 * M_PI;
+  }
+  while(psi <= -M_PI)
+  {
+    psi += 2 * M_PI;
+  }
+  return psi;
 }
 
 // Watchdog thread to check when the last state estimate was received
@@ -623,11 +660,11 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
   ROS_INFO("polynomial msg with degree: %d", deg);
 
   // decide the dimension
-  if(msg->seg_z.size() <= 0)
+  if(msg->goal.seg_z.size() <= 0)
   {
     next_trajectory_->dim_ = 2;
   }
-  else if(msg->seg_yaw.size() <= 0)
+  else if(msg->goal.seg_yaw.size() <= 0)
   {
     next_trajectory_->dim_ = 3;
   }
@@ -651,15 +688,15 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
   double total_duration = 0.0;
   std::vector<traj_opt::Piece<2>> segs_2d;
   std::vector<traj_opt::Piece<3>> segs_3d;
-  for(size_t i = 0; i < msg->seg_x.size(); ++i)
+  for(size_t i = 0; i < msg->goal.seg_x.size(); ++i)
   {
     Eigen::MatrixXd Coeffs(next_trajectory_->dim_, deg + 1);
-    float dt = msg->seg_x[i].dt;
+    float dt = msg->goal.seg_x[i].dt;
     total_duration += dt;
 
     for(size_t j = 0; j < deg + 1; ++j) {
-      Coeffs(0, j) = msg->seg_x[i].coeffs[j];
-      Coeffs(1, j) = msg->seg_y[i].coeffs[j];
+      Coeffs(0, j) = msg->goal.seg_x[i].coeffs[j];
+      Coeffs(1, j) = msg->goal.seg_y[i].coeffs[j];
     }
     switch(next_trajectory_->dim_)
     {
@@ -673,7 +710,7 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
       {
         for(size_t j = 0; j < deg + 1; ++j)
         {
-          Coeffs(2, j) = msg->seg_z[i].coeffs[j];
+          Coeffs(2, j) = msg->goal.seg_z[i].coeffs[j];
         }
         traj_opt::Piece<3> seg(traj_opt::STANDARD, Coeffs, dt);
         segs_3d.push_back(seg);
@@ -683,7 +720,7 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
   }
 
   /* Store data */
-  next_trajectory_->start_time_ = msg->t_start;
+  next_trajectory_->start_time_ = msg->goal.t_start;
   next_trajectory_->traj_dur_   = total_duration;
   traj_set_ = true;
 
@@ -1202,15 +1239,28 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
   quadrotor_common::ControlCommand command;
 
   if (!traj_set_) {
+    time_last_ = time_now;
     setAutoPilotStateForced(States::HOVER);
     command.zero();
     return command;
   }
 
-  cur_pos_(0) = state_estimate->position(0);
-  cur_pos_(1) = state_estimate->position(1);
-  cur_pos_(2) = state_estimate->position(2);
-  cur_yaw_ = tf::getYaw(state_estimate->orientation);
+  if (first_time_in_new_state_) {
+    first_time_in_new_state_ = false;
+    time_start_trajectory_execution_ = time_now;
+  }
+
+  cur_pos_(0) = state_estimate.position(0);
+  cur_pos_(1) = state_estimate.position(1);
+  cur_pos_(2) = state_estimate.position(2);
+
+  geometry_msgs::Quaternion orientation;
+  orientation.w = state_estimate.orientation.w();
+  orientation.x = state_estimate.orientation.x();
+  orientation.y = state_estimate.orientation.y();
+  orientation.z = state_estimate.orientation.z();
+
+  cur_yaw_ = tf::getYaw(orientation);
 
   if(next_trajectory_ != NULL && (time_now - next_trajectory_->start_time_).toSec() >= 0.0)
   {
@@ -1219,46 +1269,81 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
   }
 
   double t_cur = (time_now - current_trajectory_->start_time_).toSec();
-  Eigen::Vector3d pos(Eigen::Vector3d::Zero()), vel(Eigen::Vector3d::Zero()), acc(Eigen::Vector3d::Zero());
-  std::pair<double, double> yaw_yawdot(last_yaw_, 0.0);
-  Eigen::VectorXd wp(current_trajectory_->dim_), dwp(current_trajectory_->dim_), ddwp(current_trajectory_->dim_);
-
-  if(t_cur < current_trajectory_->traj_dur_ && t_cur >= 0.0) {
-    switch(current_trajectory_->dim_)
-    {
-      case 2:
-      {
-        wp  = current_trajectory_->traj_2d_.getPos(t_cur);
-        dwp = current_trajectory_->traj_2d_.getVel(t_cur);
-        pos.head(2) = wp;
-        pos(2) = last_goal_(2);
-        vel.head(2) = dwp;
-        break;
-      }
-      case 3:
-      {
-        pos = current_trajectory_->traj_3d_.getPos(t_cur);
-        vel = current_trajectory_->traj_3d_.getVel(t_cur);
-        acc = current_trajectory_->traj_3d_.getAcc(t_cur);
-
-        if(current_trajectory_->has_solo_yaw_traj_)
-        {
-          yaw_yawdot.first = current_trajectory_->traj_yaw_.getPos(t_cur)(0);
-          yaw_yawdot.second = range(current_trajectory_->traj_yaw_.getVel(t_cur)(0));
-        }
-        else
-        {
-          /*** calculate yaw ***/
-          Eigen::Vector3d dir = t_cur + time_forward_ <= current_trajectory_->traj_dur_ ? 
-                                                        current_trajectory_->traj_3d_.getPos(t_cur + time_forward_) - pos :
-                                                        current_trajectory_->traj_3d_.getPos(current_trajectory_->traj_dur_) - pos;
-          yaw_yawdot = calculate_yaw(dir, (time_now - time_last_).toSec());
-        }
-
-        break;
-      }
-    }
+  double t_prev = (time_last_ - current_trajectory_->start_time_).toSec();
+  if (t_cur < 0) {
+    time_last_ = time_now;
+    last_yaw_ = cur_yaw_;
+    command.zero();
+    return command;
   }
+
+  double last_yaw = last_yaw_;
+  double last_yawdot = last_yawdot_;
+  Eigen::Vector3d pos(Eigen::Vector3d::Zero()), vel(Eigen::Vector3d::Zero()), acc(Eigen::Vector3d::Zero());
+  std::pair<double, double> yaw_yawdot(last_yaw, 0.0);
+  // Eigen::VectorXd wp(current_trajectory_->dim_), dwp(current_trajectory_->dim_), ddwp(current_trajectory_->dim_);
+
+  // New trajectory where we fill in our lookahead horizon.
+  reference_trajectory_ = quadrotor_common::Trajectory();
+  reference_trajectory_.trajectory_type =
+      quadrotor_common::Trajectory::TrajectoryType::GENERAL;
+
+  double total_traj_dur = current_trajectory_->traj_dur_;
+  if (next_trajectory_ != NULL) {
+    total_traj_dur += next_trajectory_->traj_dur_;
+  }
+  bool first_iteration(true);
+  for( ; t_cur < total_traj_dur && t_cur <= predictive_control_lookahead_; ) {
+    std::shared_ptr<TrajData> trajectory;
+    if (t_cur < current_trajectory_->traj_dur_) {
+      trajectory = current_trajectory_;
+    } else {
+      trajectory = next_trajectory_;
+    }
+    pos = trajectory->traj_3d_.getPos(t_cur);
+    vel = trajectory->traj_3d_.getVel(t_cur);
+    acc = trajectory->traj_3d_.getAcc(t_cur);
+
+    if(trajectory->has_solo_yaw_traj_)
+    {
+      yaw_yawdot.first = trajectory->traj_yaw_.getPos(t_cur)(0);
+      yaw_yawdot.second = range(trajectory->traj_yaw_.getVel(t_cur)(0));
+    }
+    else
+    {
+      /*** calculate yaw ***/
+      Eigen::Vector3d dir = t_cur + time_forward_ <= trajectory->traj_dur_ ? 
+                                                    trajectory->traj_3d_.getPos(t_cur + time_forward_) - pos :
+                                                    trajectory->traj_3d_.getPos(trajectory->traj_dur_) - pos;
+      yaw_yawdot = calculate_yaw(dir, t_cur - t_prev, last_yaw, last_yawdot);
+    }
+
+    quadrotor_common::TrajectoryPoint traj_point;
+    traj_point.position = pos;
+    traj_point.velocity = vel;
+    traj_point.acceleration = acc;
+    traj_point.heading = yaw_yawdot.first;
+    traj_point.heading_rate = yaw_yawdot.second;
+    // TODO: set orientation using just yaw
+
+    reference_trajectory_.points.push_back(traj_point);
+
+    last_yaw = yaw_yawdot.first;
+    last_yawdot = yaw_yawdot.second;
+    if (first_iteration) {
+      last_yawdot_ = last_yawdot;
+      first_iteration = false;
+    }
+    t_prev = t_cur;
+    t_cur += trajectory->traj_3d_.timeToNextPiece(t_cur);
+  }
+
+  time_last_ = time_now;
+
+  command = base_controller_.run(
+      state_estimate, reference_trajectory_, base_controller_params_);
+
+  return command;
 }
 
 template <typename Tcontroller, typename Tparams>

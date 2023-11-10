@@ -14,7 +14,8 @@ enum class States {
   REFERENCE_CONTROL,
   TRAJECTORY_CONTROL,
   COMMAND_FEEDTHROUGH,
-  RC_MANUAL
+  RC_MANUAL,
+  POLY_TRAJ_CONTROL,
 };
 
 }  // namespace autopilot

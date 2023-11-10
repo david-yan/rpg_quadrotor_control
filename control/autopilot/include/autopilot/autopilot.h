@@ -23,11 +23,29 @@
 #include <std_msgs/Empty.h>
 
 #include <kr_tracker_msgs/PolyTrackerAction.h>
-#include <kr_trackers/traj_data.hpp>
+#include <traj_data.hpp>
 
 #include "autopilot/autopilot_states.h"
 
 namespace autopilot {
+
+// traj data
+struct TrajData
+{
+  /* info of generated traj */
+  double traj_dur_ = 0, traj_yaw_dur_ = 0;
+  ros::Time start_time_;
+  int dim_;
+
+
+  traj_opt::Trajectory2D traj_2d_;
+  traj_opt::Trajectory3D traj_3d_;
+  traj_opt::Trajectory4D traj_with_yaw_;
+  traj_opt::Trajectory1D traj_yaw_;
+  bool has_solo_yaw_traj_ = false;
+
+  traj_opt::DiscreteStates traj_discrete_;
+};
 
 template <typename Tcontroller, typename Tparams>
 class AutoPilot {
@@ -60,6 +78,9 @@ class AutoPilot {
   void forceHoverCallback(const std_msgs::Empty::ConstPtr& msg);
   void landCallback(const std_msgs::Empty::ConstPtr& msg);
   void offCallback(const std_msgs::Empty::ConstPtr& msg);
+
+  std::pair<double, double> calculate_yaw(Eigen::Vector3d &dir, double dt, double last_yaw, double last_yawdot);
+  double range(double angle);
 
   quadrotor_common::ControlCommand start(
       const quadrotor_common::QuadStateEstimate& state_estimate);
@@ -151,6 +172,10 @@ class AutoPilot {
   // Polynomial trajectory variables
   bool traj_set_;
   std::shared_ptr<TrajData> current_trajectory_, next_trajectory_;
+  ros::Time time_last_;
+  double time_forward_ = 1.5;
+  double max_dyaw_ = 0.5 * M_PI;
+  double max_ddyaw_ = M_PI;
   /*** odom related ***/
   double cur_yaw_, last_yaw_ = 0.0, last_yawdot_ = 0.0;
   Eigen::Vector3d cur_pos_, last_pos_, last_goal_;
