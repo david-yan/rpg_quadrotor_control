@@ -1325,6 +1325,7 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
     traj_point.heading = yaw_yawdot.first;
     traj_point.heading_rate = yaw_yawdot.second;
     // TODO: set orientation using just yaw
+    traj_point.orientation = Eigen::AngleAxisd(yaw_yawdot.first, Eigen::Vector3d::UnitZ());
 
     reference_trajectory_.points.push_back(traj_point);
 
