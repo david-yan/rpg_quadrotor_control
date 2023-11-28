@@ -101,8 +101,7 @@ class AutoPilot {
       ros::Duration* trajectory_execution_left_duration,
       int* trajectories_left_in_queue);
   quadrotor_common::ControlCommand executePolyTrajectory(
-      const quadrotor_common::QuadStateEstimate& state_estimate,
-      ros::Duration* trajectory_execution_left_duration);
+      const quadrotor_common::QuadStateEstimate& state_estimate);
   void polyTrackerGoalCallback(
     const kr_tracker_msgs::PolyTrackerActionGoal::ConstPtr& msg);
 

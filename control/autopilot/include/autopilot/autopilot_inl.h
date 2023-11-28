@@ -3,6 +3,7 @@
 #include <kr_tracker_msgs/PolyTrackerAction.h>
 #include <traj_data.hpp>
 
+#include <dodgeros_msgs/Command.h>
 #include <quadrotor_common/geometry_eigen_conversions.h>
 #include <quadrotor_common/math_common.h>
 #include <quadrotor_common/parameter_helper.h>
@@ -10,6 +11,7 @@
 #include <trajectory_generation_helper/heading_trajectory_helper.h>
 #include <trajectory_generation_helper/polynomial_trajectory_helper.h>
 
+#include <eigen_conversions/eigen_msg.h>
 #include <tf/transform_datatypes.h>
 #include "autopilot.h"
 
@@ -69,7 +71,7 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
 
   // Subscribers
   state_estimate_sub_ =
-      nh_.subscribe("autopilot/state_estimate", 1,
+      nh_.subscribe("/kingfisher/dodgeros_pilot/groundtruth/odometry", 1,
                     &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
                     this, ros::TransportHints().tcpNoDelay());
   low_level_feedback_sub_ = nh_.subscribe(
@@ -108,6 +110,10 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
   off_sub_ = nh_.subscribe("autopilot/off", 1,
                            &AutoPilot<Tcontroller, Tparams>::offCallback, this);
 
+  traj_set_ = false;
+  current_trajectory_.reset(new TrajData);
+  next_trajectory_.reset(new TrajData);  
+
   // Start watchdog thread
   try {
     watchdog_thread_ =
@@ -144,10 +150,6 @@ AutoPilot<Tcontroller, Tparams>::~AutoPilot() {
   stop_watchdog_thread_ = true;
   // Wait for watchdog thread to finish
   watchdog_thread_.join();
-
-  traj_set_ = false;
-  current_trajectory_.reset(new TrajData);
-  next_trajectory_.reset(new TrajData);  
 
   // Send out an off command to ensure quadrotor is off
   quadrotor_common::ControlCommand control_cmd;
@@ -487,7 +489,17 @@ void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(
       control_cmd.collective_thrust = kGravityAcc_;
       break;
     case States::POLY_TRAJ_CONTROL:
-      control_cmd.zero();
+      std::cout << "executing poly traj" << std::endl;
+      control_cmd = executePolyTrajectory(predicted_state);
+      std::cout << "done" << std::endl;
+      dodgeros_msgs::Command command;
+      command.is_single_rotor_thrust = false;
+      command.collective_thrust = control_cmd.collective_thrust;
+      // tf::vectorEigenToMsg(control_cmd.bodyrates, &command.bodyrates);
+      command.bodyrates.x = control_cmd.bodyrates(0);
+      command.bodyrates.y = control_cmd.bodyrates(1);
+      command.bodyrates.z = control_cmd.bodyrates(2);
+      std::cout << command << std::endl;
       break;
   }
   const ros::Duration control_computation_time =
@@ -658,17 +670,20 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
   }
   size_t deg = goal.seg_x[0].degree;
   ROS_INFO("polynomial msg with degree: %d", deg);
+  next_trajectory_.reset(new TrajData);
 
   // decide the dimension
-  if(msg->goal.seg_z.size() <= 0)
+  ROS_INFO("seg_z.size() = %d", goal.seg_z.size());
+  ROS_INFO("seg_yaw.size() = %d", goal.seg_yaw.size());
+  if(goal.seg_z.size() <= 0)
   {
     next_trajectory_->dim_ = 2;
   }
-  else if(msg->goal.seg_yaw.size() <= 0)
+  else if(goal.seg_yaw.size() <= 0)
   {
     next_trajectory_->dim_ = 3;
   }
-  
+  ROS_INFO("Decided the dimension");
   // for(size_t i = 0; i < goal.seg_z.size(); ++i) {
   //   const auto coeffs = goal.seg_z[i].coeffs;
   //   std::stringstream coeffs_buf;
@@ -718,6 +733,7 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
       }
     }
   }
+  ROS_INFO("Finished setting up the trajectory");
 
   /* Store data */
   next_trajectory_->start_time_ = msg->goal.t_start;
@@ -1232,8 +1248,7 @@ AutoPilot<Tcontroller, Tparams>::followReference(
 template <typename Tcontroller, typename Tparams>
 quadrotor_common::ControlCommand
 AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
-    const quadrotor_common::QuadStateEstimate& state_estimate,
-    ros::Duration* trajectory_execution_left_duration) {
+    const quadrotor_common::QuadStateEstimate& state_estimate) {
   const ros::Time time_now = ros::Time::now();
 
   quadrotor_common::ControlCommand command;
