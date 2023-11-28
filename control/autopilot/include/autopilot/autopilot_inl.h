@@ -64,6 +64,8 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
   }
 
   // Publishers
+  dodgeros_command_pub_ =
+      nh_.advertise<dodgeros_msgs::Command>("/kingfisher/dodgeros_pilot/feedthrough_command", 1);
   control_command_pub_ =
       nh_.advertise<quadrotor_msgs::ControlCommand>("control_command", 1);
   autopilot_feedback_pub_ =
@@ -500,6 +502,7 @@ void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(
       command.bodyrates.y = control_cmd.bodyrates(1);
       command.bodyrates.z = control_cmd.bodyrates(2);
       std::cout << command << std::endl;
+      publishDodgerosCommand(command);
       break;
   }
   const ros::Duration control_computation_time =
@@ -1356,8 +1359,16 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
 
   time_last_ = time_now;
 
-  command = base_controller_.run(
-      state_estimate, reference_trajectory_, base_controller_params_);
+  if (reference_trajectory_.points.size() > 0) {
+    ROS_INFO("Running base_controller with %d trajectory points", reference_trajectory_.points.size());
+    command = base_controller_.run(
+        state_estimate, reference_trajectory_, base_controller_params_);
+  }
+  else {
+    command.zero();
+    setAutoPilotState(States::HOVER);
+    base_controller_.off();
+  }
 
   return command;
 }
@@ -1569,6 +1580,12 @@ quadrotor_common::QuadStateEstimate
 AutoPilot<Tcontroller, Tparams>::getPredictedStateEstimate(
     const ros::Time& time) const {
   return state_predictor_.predictState(time);
+}
+
+template <typename Tcontroller, typename Tparams>
+void AutoPilot<Tcontroller, Tparams>::publishDodgerosCommand(
+    const dodgeros_msgs::Command& command) {
+  dodgeros_command_pub_.publish(command);
 }
 
 template <typename Tcontroller, typename Tparams>

@@ -5,6 +5,7 @@
 #include <mutex>
 #include <thread>
 
+#include <dodgeros_msgs/Command.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TwistStamped.h>
 #include <nav_msgs/Odometry.h>
@@ -111,6 +112,7 @@ class AutoPilot {
   quadrotor_common::QuadStateEstimate getPredictedStateEstimate(
       const ros::Time& time) const;
 
+  void publishDodgerosCommand(const dodgeros_msgs::Command& command);
   void publishControlCommand(const quadrotor_common::ControlCommand& command);
   void publishAutopilotFeedback(
       const States& autopilot_state, const ros::Duration& control_command_delay,
@@ -143,6 +145,7 @@ class AutoPilot {
   // - received_go_to_pose_command_
   mutable std::mutex go_to_pose_mutex_;
 
+  ros::Publisher dodgeros_command_pub_;
   ros::Publisher control_command_pub_;
   ros::Publisher autopilot_feedback_pub_;
 
