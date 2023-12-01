@@ -174,6 +174,7 @@ class AutoPilot {
   // Polynomial trajectory variables
   bool traj_set_;
   std::shared_ptr<TrajData> current_trajectory_, next_trajectory_;
+  double time_diff_ = 0.0;
   ros::Time time_last_;
   double time_forward_ = 1.5;
   double max_dyaw_ = 0.5 * M_PI;

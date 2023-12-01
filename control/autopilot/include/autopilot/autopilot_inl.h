@@ -72,8 +72,12 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
       nh_.advertise<quadrotor_msgs::AutopilotFeedback>("autopilot/feedback", 1);
 
   // Subscribers
+  // state_estimate_sub_ =
+  //     nh_.subscribe("/kingfisher/dodgeros_pilot/groundtruth/odometry", 1,
+  //                   &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
+  //                   this, ros::TransportHints().tcpNoDelay());
   state_estimate_sub_ =
-      nh_.subscribe("/kingfisher/dodgeros_pilot/groundtruth/odometry", 1,
+      nh_.subscribe("autopilot/state_estimate", 1,
                     &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
                     this, ros::TransportHints().tcpNoDelay());
   low_level_feedback_sub_ = nh_.subscribe(
@@ -97,7 +101,7 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
       &AutoPilot<Tcontroller, Tparams>::controlCommandInputCallback, this);
 
   poly_tracker_goal_sub_ = nh_.subscribe(
-    "/kingfisher/trackers_manager/poly_tracker/PolyTracker/goal", 1,
+    "/kingfisher/trackers_manager/poly_tracker/PolyTracker/goal", 2,
     &AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback, this);
 
   start_sub_ =
@@ -113,7 +117,7 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
                            &AutoPilot<Tcontroller, Tparams>::offCallback, this);
 
   traj_set_ = false;
-  current_trajectory_.reset(new TrajData);
+  current_trajectory_ = NULL;
   next_trajectory_.reset(new TrajData);  
 
   // Start watchdog thread
@@ -492,7 +496,7 @@ void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(
       break;
     case States::POLY_TRAJ_CONTROL:
       std::cout << "executing poly traj" << std::endl;
-      control_cmd = executePolyTrajectory(predicted_state);
+      control_cmd = executePolyTrajectory(received_state_est_);
       std::cout << "done" << std::endl;
       dodgeros_msgs::Command command;
       command.is_single_rotor_thrust = false;
@@ -667,6 +671,35 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
 
   // ROS_INFO("%s", msg._dt_type);
   const auto goal = msg->goal;
+  ROS_INFO("header.seq: %d, set_yaw: %d", msg->header.seq, goal.set_yaw);
+  if (goal.set_yaw) {
+    ROS_INFO("Setting yaw");
+
+    std::lock_guard<std::mutex> go_to_pose_lock(go_to_pose_mutex_);
+    // Idea: A trajectory is planned to the desired pose in a separate
+    // thread. Once the thread is done it pushes the computed trajectory into the
+    // trajectory queue and switches to TRAJECTORY_CONTROL mode
+    if (autopilot_state_ == States::HOVER) {
+      setAutoPilotState(States::GO_TO_POSE);
+      geometry_msgs::PoseStamped pose_command;
+
+      pose_command.header = msg->header;
+      tf::pointEigenToMsg(received_state_est_.position, pose_command.pose.position);
+
+      Eigen::Quaterniond orientation;
+      orientation = Eigen::AngleAxisd(goal.final_yaw, Eigen::Vector3d::UnitZ());
+      tf::quaternionEigenToMsg(orientation, pose_command.pose.orientation);
+      requested_go_to_pose_ = pose_command;
+      received_go_to_pose_command_ = true;
+    } else {
+      ROS_WARN(
+          "[%s] Will not execute go to pose action since autopilot is "
+          "not in HOVER",
+          pnh_.getNamespace().c_str());
+    }
+    return;
+  }
+
   ROS_INFO("coeff size: %d", goal.seg_x.size());
   if (goal.seg_x.size() == 0) {
     return;
@@ -675,36 +708,10 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
   ROS_INFO("polynomial msg with degree: %d", deg);
   next_trajectory_.reset(new TrajData);
 
-  // decide the dimension
-  ROS_INFO("seg_z.size() = %d", goal.seg_z.size());
-  ROS_INFO("seg_yaw.size() = %d", goal.seg_yaw.size());
-  if(goal.seg_z.size() <= 0)
-  {
-    next_trajectory_->dim_ = 2;
-  }
-  else if(goal.seg_yaw.size() <= 0)
-  {
-    next_trajectory_->dim_ = 3;
-  }
-  ROS_INFO("Decided the dimension");
-  // for(size_t i = 0; i < goal.seg_z.size(); ++i) {
-  //   const auto coeffs = goal.seg_z[i].coeffs;
-  //   std::stringstream coeffs_buf;
-  //   coeffs_buf << "[";
-  //   for (size_t j = 0; j < coeffs.size(); ++j) {
-  //     if (j != 0) {
-  //       coeffs_buf << ", ";
-  //     }
-  //     coeffs_buf << coeffs[j];
-  //   }
-  //   coeffs_buf << "]";
-  //   std::string coeffs_str = coeffs_buf.str();
-  //   ROS_INFO("seg_z coeff: %s", coeffs_str.c_str());
-  // }
+  next_trajectory_->dim_ = 3;
 
   // set up the trajectory
   double total_duration = 0.0;
-  std::vector<traj_opt::Piece<2>> segs_2d;
   std::vector<traj_opt::Piece<3>> segs_3d;
   for(size_t i = 0; i < msg->goal.seg_x.size(); ++i)
   {
@@ -715,26 +722,11 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
     for(size_t j = 0; j < deg + 1; ++j) {
       Coeffs(0, j) = msg->goal.seg_x[i].coeffs[j];
       Coeffs(1, j) = msg->goal.seg_y[i].coeffs[j];
+      Coeffs(2, j) = msg->goal.seg_z[i].coeffs[j];
     }
-    switch(next_trajectory_->dim_)
-    {
-      case 2:
-      {
-        traj_opt::Piece<2> seg(traj_opt::STANDARD, Coeffs, dt);
-        segs_2d.push_back(seg);
-        break;
-      }
-      case 3:
-      {
-        for(size_t j = 0; j < deg + 1; ++j)
-        {
-          Coeffs(2, j) = msg->goal.seg_z[i].coeffs[j];
-        }
-        traj_opt::Piece<3> seg(traj_opt::STANDARD, Coeffs, dt);
-        segs_3d.push_back(seg);
-        break;
-      }
-    }
+
+    traj_opt::Piece<3> seg(traj_opt::STANDARD, Coeffs, dt);
+    segs_3d.push_back(seg);
   }
   ROS_INFO("Finished setting up the trajectory");
 
@@ -743,15 +735,7 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
   next_trajectory_->traj_dur_   = total_duration;
   traj_set_ = true;
 
-  switch(next_trajectory_->dim_)
-  {
-    case 2:
-      next_trajectory_->traj_2d_ = traj_opt::Trajectory2D(segs_2d, total_duration);
-      break;
-    case 3:
-      next_trajectory_->traj_3d_ = traj_opt::Trajectory3D(segs_3d, total_duration);
-      break;
-  }
+  next_trajectory_->traj_3d_ = traj_opt::Trajectory3D(segs_3d, total_duration);
 
   ROS_INFO("PolyTracker: Set the poly trajectory");
 
@@ -1280,14 +1264,26 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
 
   cur_yaw_ = tf::getYaw(orientation);
 
-  if(next_trajectory_ != NULL && (time_now - next_trajectory_->start_time_).toSec() >= 0.0)
-  {
+  if (next_trajectory_ != NULL && current_trajectory_ == NULL) {
+    ROS_INFO("initializing current trajectory");
     current_trajectory_ = next_trajectory_;
     next_trajectory_ = NULL;
+    ROS_INFO("calculating time_diff_");
+    time_diff_ = (time_now - current_trajectory_->start_time_).toSec();
+  }
+  else if(next_trajectory_ != NULL && (time_now - next_trajectory_->start_time_).toSec() - time_diff_ >= 0.0) {
+    current_trajectory_ = next_trajectory_;
+    next_trajectory_ = NULL;
+
+    // set solve_from_scratch_ = true
+    base_controller_.off();
   }
 
-  double t_cur = (time_now - current_trajectory_->start_time_).toSec();
-  double t_prev = (time_last_ - current_trajectory_->start_time_).toSec();
+  ROS_INFO("time_diff_: %f", time_diff_);
+
+  double t_cur = (time_now - current_trajectory_->start_time_).toSec() - time_diff_;
+  double t_prev = (time_last_ - current_trajectory_->start_time_).toSec() - time_diff_;
+  ROS_INFO("t_curr: %f", t_cur);
   if (t_cur < 0) {
     time_last_ = time_now;
     last_yaw_ = cur_yaw_;
@@ -1347,6 +1343,11 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
 
     reference_trajectory_.points.push_back(traj_point);
 
+    Eigen::IOFormat CleanFmt(2, 0, ", ", "\n", "[", "]");
+    ROS_INFO_STREAM("Trajectory position:" << traj_point.position.transpose().format(CleanFmt));
+    ROS_INFO_STREAM("Trajectory velocity:" << traj_point.velocity.transpose().format(CleanFmt));
+    ROS_INFO_STREAM("Trajectory acceleration:" << traj_point.acceleration.transpose().format(CleanFmt));
+
     last_yaw = yaw_yawdot.first;
     last_yawdot = yaw_yawdot.second;
     if (first_iteration) {
@@ -1354,7 +1355,7 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
       first_iteration = false;
     }
     t_prev = t_cur;
-    t_cur += trajectory->traj_3d_.timeToNextPiece(t_cur);
+    t_cur += 0.1;
   }
 
   time_last_ = time_now;
