@@ -72,14 +72,14 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
       nh_.advertise<quadrotor_msgs::AutopilotFeedback>("autopilot/feedback", 1);
 
   // Subscribers
-  // state_estimate_sub_ =
-  //     nh_.subscribe("/kingfisher/dodgeros_pilot/groundtruth/odometry", 1,
-  //                   &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
-  //                   this, ros::TransportHints().tcpNoDelay());
   state_estimate_sub_ =
-      nh_.subscribe("autopilot/state_estimate", 1,
+      nh_.subscribe("/kingfisher/dodgeros_pilot/groundtruth/odometry", 1,
                     &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
                     this, ros::TransportHints().tcpNoDelay());
+  // state_estimate_sub_ =
+  //     nh_.subscribe("autopilot/state_estimate", 1,
+  //                   &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
+  //                   this, ros::TransportHints().tcpNoDelay());
   low_level_feedback_sub_ = nh_.subscribe(
       "low_level_feedback", 1,
       &AutoPilot<Tcontroller, Tparams>::lowLevelFeedbackCallback, this);
@@ -1268,10 +1268,10 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
     ROS_INFO("initializing current trajectory");
     current_trajectory_ = next_trajectory_;
     next_trajectory_ = NULL;
-    ROS_INFO("calculating time_diff_");
-    time_diff_ = (time_now - current_trajectory_->start_time_).toSec();
+    // ROS_INFO("calculating time_diff_");
+    // time_diff_ = (time_now - current_trajectory_->start_time_).toSec();
   }
-  else if(next_trajectory_ != NULL && (time_now - next_trajectory_->start_time_).toSec() - time_diff_ >= 0.0) {
+  else if(next_trajectory_ != NULL && (time_now - next_trajectory_->start_time_).toSec() >= 0.0) {
     current_trajectory_ = next_trajectory_;
     next_trajectory_ = NULL;
 
@@ -1279,10 +1279,10 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
     base_controller_.off();
   }
 
-  ROS_INFO("time_diff_: %f", time_diff_);
+  // ROS_INFO("time_diff_: %f", time_diff_);
 
-  double t_cur = (time_now - current_trajectory_->start_time_).toSec() - time_diff_;
-  double t_prev = (time_last_ - current_trajectory_->start_time_).toSec() - time_diff_;
+  double t_cur = (time_now - current_trajectory_->start_time_).toSec();
+  double t_prev = (time_last_ - current_trajectory_->start_time_).toSec();
   ROS_INFO("t_curr: %f", t_cur);
   if (t_cur < 0) {
     time_last_ = time_now;
@@ -1344,9 +1344,9 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
     reference_trajectory_.points.push_back(traj_point);
 
     Eigen::IOFormat CleanFmt(2, 0, ", ", "\n", "[", "]");
-    ROS_INFO_STREAM("Trajectory position:" << traj_point.position.transpose().format(CleanFmt));
-    ROS_INFO_STREAM("Trajectory velocity:" << traj_point.velocity.transpose().format(CleanFmt));
-    ROS_INFO_STREAM("Trajectory acceleration:" << traj_point.acceleration.transpose().format(CleanFmt));
+    // ROS_INFO_STREAM("Trajectory position:" << traj_point.position.transpose().format(CleanFmt));
+    // ROS_INFO_STREAM("Trajectory velocity:" << traj_point.velocity.transpose().format(CleanFmt));
+    // ROS_INFO_STREAM("Trajectory acceleration:" << traj_point.acceleration.transpose().format(CleanFmt));
 
     last_yaw = yaw_yawdot.first;
     last_yawdot = yaw_yawdot.second;
