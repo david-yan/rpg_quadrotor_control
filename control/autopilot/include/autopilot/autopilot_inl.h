@@ -54,7 +54,8 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
       time_last_state_estimate_received_(),
       time_started_emergency_landing_(),
       destructor_invoked_(false),
-      time_last_autopilot_feedback_published_()
+      time_last_autopilot_feedback_published_(),
+      reference_state_input_timeout_(10.0)
 
 {
   if (!loadParameters()) {
@@ -63,23 +64,25 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
     return;
   }
 
+  reference_state_input_timeout_ = 10.0;
+
   // Publishers
   dodgeros_command_pub_ =
-      nh_.advertise<dodgeros_msgs::Command>("/kingfisher/dodgeros_pilot/feedthrough_command", 1);
+      nh_.advertise<dodgeros_msgs::Command>("dodgeros_pilot/feedthrough_command", 1);
   control_command_pub_ =
       nh_.advertise<quadrotor_msgs::ControlCommand>("control_command", 1);
   autopilot_feedback_pub_ =
       nh_.advertise<quadrotor_msgs::AutopilotFeedback>("autopilot/feedback", 1);
 
   // Subscribers
-  state_estimate_sub_ =
-      nh_.subscribe("/kingfisher/dodgeros_pilot/groundtruth/odometry", 1,
-                    &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
-                    this, ros::TransportHints().tcpNoDelay());
   // state_estimate_sub_ =
-  //     nh_.subscribe("autopilot/state_estimate", 1,
+  //     nh_.subscribe("dodgeros_pilot/groundtruth/odometry", 1,
   //                   &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
   //                   this, ros::TransportHints().tcpNoDelay());
+  state_estimate_sub_ =
+      nh_.subscribe("autopilot/state_estimate", 1,
+                    &AutoPilot<Tcontroller, Tparams>::stateEstimateCallback,
+                    this, ros::TransportHints().tcpNoDelay());
   low_level_feedback_sub_ = nh_.subscribe(
       "low_level_feedback", 1,
       &AutoPilot<Tcontroller, Tparams>::lowLevelFeedbackCallback, this);
@@ -101,7 +104,7 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
       &AutoPilot<Tcontroller, Tparams>::controlCommandInputCallback, this);
 
   poly_tracker_goal_sub_ = nh_.subscribe(
-    "/kingfisher/trackers_manager/poly_tracker/PolyTracker/goal", 2,
+    "trackers_manager/poly_tracker/PolyTracker/goal", 2,
     &AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback, this);
 
   start_sub_ =
@@ -172,8 +175,6 @@ inline std::pair<double, double> AutoPilot<Tcontroller, Tparams>::calculate_yaw(
   double d_yaw;
 
   d_yaw = range(yaw_temp - last_yaw);
-
-
 
   const double YDM = d_yaw >= 0 ? max_dyaw_ : -max_dyaw_;
   const double YDDM = d_yaw >= 0 ? max_ddyaw_ : -max_ddyaw_;
@@ -363,6 +364,7 @@ void AutoPilot<Tcontroller, Tparams>::goToPoseThread() {
           std::lock_guard<std::mutex> main_lock(main_mutex_);
 
           if (autopilot_state_ == States::GO_TO_POSE) {
+            ROS_INFO_STREAM(go_to_pose_traj.toRosMessage() << std::endl);
             trajectory_queue_.clear();
             trajectory_queue_.push_back(go_to_pose_traj);
             setAutoPilotState(States::TRAJECTORY_CONTROL);
@@ -434,6 +436,7 @@ void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(
   ros::Duration trajectory_execution_left_duration(0.0);
   int trajectories_left_in_queue = 0;
   const ros::Time start_control_command_computation = ros::Time::now();
+  dodgeros_msgs::Command command;
   // Compute control command depending on autopilot state
   switch (autopilot_state_) {
     case States::OFF:
@@ -475,12 +478,28 @@ void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(
       control_cmd = velocityControl(predicted_state);
       break;
     case States::REFERENCE_CONTROL:
-      control_cmd = followReference(predicted_state);
+      control_cmd = followReference(received_state_est_);
+      command.is_single_rotor_thrust = false;
+      command.collective_thrust = control_cmd.collective_thrust;
+      // tf::vectorEigenToMsg(control_cmd.bodyrates, &command.bodyrates);
+      command.bodyrates.x = control_cmd.bodyrates(0);
+      command.bodyrates.y = control_cmd.bodyrates(1);
+      command.bodyrates.z = control_cmd.bodyrates(2);
+      // std::cout << command << std::endl;
+      publishDodgerosCommand(command);
       break;
     case States::TRAJECTORY_CONTROL:
       control_cmd = executeTrajectory(predicted_state,
                                       &trajectory_execution_left_duration,
                                       &trajectories_left_in_queue);
+      command.is_single_rotor_thrust = false;
+      command.collective_thrust = control_cmd.collective_thrust;
+      // tf::vectorEigenToMsg(control_cmd.bodyrates, &command.bodyrates);
+      command.bodyrates.x = control_cmd.bodyrates(0);
+      command.bodyrates.y = control_cmd.bodyrates(1);
+      command.bodyrates.z = control_cmd.bodyrates(2);
+      // std::cout << command << std::endl;
+      publishDodgerosCommand(command);
       break;
     case States::COMMAND_FEEDTHROUGH:
       // Do nothing here, command is being published in the command input
@@ -498,14 +517,13 @@ void AutoPilot<Tcontroller, Tparams>::stateEstimateCallback(
       std::cout << "executing poly traj" << std::endl;
       control_cmd = executePolyTrajectory(received_state_est_);
       std::cout << "done" << std::endl;
-      dodgeros_msgs::Command command;
       command.is_single_rotor_thrust = false;
       command.collective_thrust = control_cmd.collective_thrust;
       // tf::vectorEigenToMsg(control_cmd.bodyrates, &command.bodyrates);
       command.bodyrates.x = control_cmd.bodyrates(0);
       command.bodyrates.y = control_cmd.bodyrates(1);
       command.bodyrates.z = control_cmd.bodyrates(2);
-      std::cout << command << std::endl;
+      // std::cout << command << std::endl;
       publishDodgerosCommand(command);
       break;
   }
@@ -576,6 +594,7 @@ void AutoPilot<Tcontroller, Tparams>::poseCommandCallback(
   // thread. Once the thread is done it pushes the computed trajectory into the
   // trajectory queue and switches to TRAJECTORY_CONTROL mode
   if (autopilot_state_ == States::HOVER) {
+    ROS_INFO("Setting state to GO_TO_POSE");
     setAutoPilotState(States::GO_TO_POSE);
     requested_go_to_pose_ = *msg;
     received_go_to_pose_command_ = true;
@@ -625,6 +644,8 @@ void AutoPilot<Tcontroller, Tparams>::referenceStateCallback(
     return;
   }
 
+  ROS_INFO("Receieved reference state");
+
   std::lock_guard<std::mutex> main_lock(main_mutex_);
 
   if (autopilot_state_ != States::HOVER &&
@@ -671,9 +692,9 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
 
   // ROS_INFO("%s", msg._dt_type);
   const auto goal = msg->goal;
-  ROS_INFO("header.seq: %d, set_yaw: %d", msg->header.seq, goal.set_yaw);
+  // ROS_INFO("header.seq: %d, set_yaw: %d", msg->header.seq, goal.set_yaw);
   if (goal.set_yaw) {
-    ROS_INFO("Setting yaw");
+    // ROS_INFO("Setting yaw");
 
     std::lock_guard<std::mutex> go_to_pose_lock(go_to_pose_mutex_);
     // Idea: A trajectory is planned to the desired pose in a separate
@@ -700,12 +721,12 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
     return;
   }
 
-  ROS_INFO("coeff size: %d", goal.seg_x.size());
+  // ROS_INFO("coeff size: %d", goal.seg_x.size());
   if (goal.seg_x.size() == 0) {
     return;
   }
   size_t deg = goal.seg_x[0].degree;
-  ROS_INFO("polynomial msg with degree: %d", deg);
+  // ROS_INFO("polynomial msg with degree: %d", deg);
   next_trajectory_.reset(new TrajData);
 
   next_trajectory_->dim_ = 3;
@@ -728,7 +749,7 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
     traj_opt::Piece<3> seg(traj_opt::STANDARD, Coeffs, dt);
     segs_3d.push_back(seg);
   }
-  ROS_INFO("Finished setting up the trajectory");
+  // ROS_INFO("Finished setting up the trajectory");
 
   /* Store data */
   next_trajectory_->start_time_ = msg->goal.t_start;
@@ -737,7 +758,7 @@ void AutoPilot<Tcontroller, Tparams>::polyTrackerGoalCallback(const kr_tracker_m
 
   next_trajectory_->traj_3d_ = traj_opt::Trajectory3D(segs_3d, total_duration);
 
-  ROS_INFO("PolyTracker: Set the poly trajectory");
+  // ROS_INFO("PolyTracker: Set the poly trajectory");
 
   if (autopilot_state_ != States::POLY_TRAJ_CONTROL) {
     setAutoPilotState(States::POLY_TRAJ_CONTROL);
@@ -1218,8 +1239,10 @@ AutoPilot<Tcontroller, Tparams>::followReference(
     first_time_in_new_state_ = false;
   }
 
+  const auto time_diff = ros::Time::now() - time_last_reference_state_input_received_;
   if ((ros::Time::now() - time_last_reference_state_input_received_) >
       ros::Duration(reference_state_input_timeout_)) {
+    // ROS_INFO("breaking %f > %f, %f", time_diff.toSec(), ros::Duration(reference_state_input_timeout_).toSec(), reference_state_input_timeout_);
     setAutoPilotState(States::HOVER);
   }
 
@@ -1343,10 +1366,11 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
 
     reference_trajectory_.points.push_back(traj_point);
 
-    Eigen::IOFormat CleanFmt(2, 0, ", ", "\n", "[", "]");
+    // Eigen::IOFormat CleanFmt(5, 0, ", ", "\n", "[", "]");
     // ROS_INFO_STREAM("Trajectory position:" << traj_point.position.transpose().format(CleanFmt));
     // ROS_INFO_STREAM("Trajectory velocity:" << traj_point.velocity.transpose().format(CleanFmt));
     // ROS_INFO_STREAM("Trajectory acceleration:" << traj_point.acceleration.transpose().format(CleanFmt));
+    ROS_INFO_STREAM(traj_point.toRosMessage());
 
     last_yaw = yaw_yawdot.first;
     last_yawdot = yaw_yawdot.second;
@@ -1355,7 +1379,7 @@ AutoPilot<Tcontroller, Tparams>::executePolyTrajectory(
       first_iteration = false;
     }
     t_prev = t_cur;
-    t_cur += 0.1;
+    t_cur += 0.02;
   }
 
   time_last_ = time_now;

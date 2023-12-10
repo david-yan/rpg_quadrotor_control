@@ -89,6 +89,7 @@ class Piece
     for (int i = 0; i <= degree; i++)
     {
         pos += tn * ncoeffs.col(i);
+        std::cout << "coeff: " << ncoeffs.col(1) << std::endl;
         tn *= t;
     }
     return pos;
