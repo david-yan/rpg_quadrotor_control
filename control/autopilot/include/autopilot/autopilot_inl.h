@@ -54,9 +54,7 @@ AutoPilot<Tcontroller, Tparams>::AutoPilot(const ros::NodeHandle& nh,
       time_last_state_estimate_received_(),
       time_started_emergency_landing_(),
       destructor_invoked_(false),
-      time_last_autopilot_feedback_published_(),
-      reference_state_input_timeout_(10.0)
-
+      time_last_autopilot_feedback_published_()
 {
   if (!loadParameters()) {
     ROS_ERROR("[%s] Could not load parameters.", pnh_.getNamespace().c_str());

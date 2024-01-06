@@ -133,6 +133,46 @@ class Piece
     return acc;
   }
 
+  // TODO: These two functions (computeFactorials and dVec) are very similar,
+// they should be mergable
+Eigen::VectorXd dVec(const int number_of_coefficients,
+                     const int derivative_order) {
+  // computes the coefficient that comes with the derivative
+  // derivative_order = 0: [ 1 1 1 1 1]
+  // derivative_order = 1: [ 0 1 2 3 4]
+  // derivative_order = 2: [ 0 0 2 6 12.]
+
+  Eigen::VectorXd dvec = Eigen::VectorXd::Ones(number_of_coefficients);
+
+  if (derivative_order == 0) return dvec;
+
+  for (int i = 0; i < number_of_coefficients; i++) {
+    double tmp = std::max(0, i);
+    for (int k = 1; k <= derivative_order - 1; k++) {
+      tmp *= std::max(0, i - k);
+    }
+    dvec(i) = tmp;
+  }
+  return dvec;
+}
+
+  Eigen::VectorXd tVec(const int number_of_coefficients,
+                      const int derivative_order, const double t) {
+    // def t_vec(polynomial_order, derivative_order, time):
+    //    # fill a time vector like
+    //    # derivative_order = 0: [1 t t^2 t^3 ...]
+    //    # derivative_order = 1: [0 1 t   t^2 ...]
+    //    # derivative_order = 2: [0 0 1   t^1 ...]
+    //    # .......
+
+    Eigen::VectorXd tvec = Eigen::VectorXd::Zero(number_of_coefficients);
+    for (int i = derivative_order; i < number_of_coefficients; i++) {
+      double power = std::max(0, i - derivative_order);
+      tvec(i) = std::pow(t, power);
+    }
+    return tvec;
+  }
+
 
  private:
 
