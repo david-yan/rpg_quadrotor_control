@@ -5,7 +5,13 @@ project(autopilot)
 add_compile_options(-std=c++11)
 add_compile_options(-O3)
 
-find_package(catkin_simple REQUIRED)
+find_package(
+    catkin_simple REQUIRED
+    COMPONENTS kr_tracker_msgs
+               kr_trackers
+               tf
+               dodgeros_msgs
+               eigen_conversions)
 catkin_simple(ALL_DEPS_REQUIRED)
 
 cs_add_executable(autopilot

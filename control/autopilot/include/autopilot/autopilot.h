@@ -5,6 +5,7 @@
 #include <mutex>
 #include <thread>
 
+#include <dodgeros_msgs/Command.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TwistStamped.h>
 #include <nav_msgs/Odometry.h>
@@ -22,9 +23,30 @@
 #include <state_predictor/state_predictor.h>
 #include <std_msgs/Empty.h>
 
+#include <kr_tracker_msgs/PolyTrackerAction.h>
+#include <traj_data.hpp>
+
 #include "autopilot/autopilot_states.h"
 
 namespace autopilot {
+
+// traj data
+struct TrajData
+{
+  /* info of generated traj */
+  double traj_dur_ = 0, traj_yaw_dur_ = 0;
+  ros::Time start_time_;
+  int dim_;
+
+
+  traj_opt::Trajectory2D traj_2d_;
+  traj_opt::Trajectory3D traj_3d_;
+  traj_opt::Trajectory4D traj_with_yaw_;
+  traj_opt::Trajectory1D traj_yaw_;
+  bool has_solo_yaw_traj_ = false;
+
+  traj_opt::DiscreteStates traj_discrete_;
+};
 
 template <typename Tcontroller, typename Tparams>
 class AutoPilot {
@@ -58,6 +80,9 @@ class AutoPilot {
   void landCallback(const std_msgs::Empty::ConstPtr& msg);
   void offCallback(const std_msgs::Empty::ConstPtr& msg);
 
+  std::pair<double, double> calculate_yaw(Eigen::Vector3d &dir, double dt, double last_yaw, double last_yawdot);
+  double range(double angle);
+
   quadrotor_common::ControlCommand start(
       const quadrotor_common::QuadStateEstimate& state_estimate);
   quadrotor_common::ControlCommand hover(
@@ -76,6 +101,10 @@ class AutoPilot {
       const quadrotor_common::QuadStateEstimate& state_estimate,
       ros::Duration* trajectory_execution_left_duration,
       int* trajectories_left_in_queue);
+  quadrotor_common::ControlCommand executePolyTrajectory(
+      const quadrotor_common::QuadStateEstimate& state_estimate);
+  void polyTrackerGoalCallback(
+    const kr_tracker_msgs::PolyTrackerActionGoal::ConstPtr& msg);
 
   void setAutoPilotState(const States& new_state);
   void setAutoPilotStateForced(const States& new_state);
@@ -83,6 +112,7 @@ class AutoPilot {
   quadrotor_common::QuadStateEstimate getPredictedStateEstimate(
       const ros::Time& time) const;
 
+  void publishDodgerosCommand(const dodgeros_msgs::Command& command);
   void publishControlCommand(const quadrotor_common::ControlCommand& command);
   void publishAutopilotFeedback(
       const States& autopilot_state, const ros::Duration& control_command_delay,
@@ -115,6 +145,7 @@ class AutoPilot {
   // - received_go_to_pose_command_
   mutable std::mutex go_to_pose_mutex_;
 
+  ros::Publisher dodgeros_command_pub_;
   ros::Publisher control_command_pub_;
   ros::Publisher autopilot_feedback_pub_;
 
@@ -130,6 +161,8 @@ class AutoPilot {
   ros::Subscriber land_sub_;
   ros::Subscriber off_sub_;
 
+  ros::Subscriber poly_tracker_goal_sub_;
+
   state_predictor::StatePredictor state_predictor_;
 
   Tcontroller base_controller_;
@@ -137,6 +170,19 @@ class AutoPilot {
 
   quadrotor_common::TrajectoryPoint reference_state_;
   quadrotor_common::Trajectory reference_trajectory_;
+
+  // Polynomial trajectory variables
+  bool traj_set_;
+  std::shared_ptr<TrajData> current_trajectory_, next_trajectory_;
+  double time_diff_ = 0.0;
+  ros::Time time_last_;
+  double time_forward_ = 0.02;
+  double max_dyaw_ = 0.5 * M_PI;
+  double max_ddyaw_ = M_PI;
+  /*** odom related ***/
+  double cur_yaw_, last_yaw_ = 0.0, last_yawdot_ = 0.0;
+  Eigen::Vector3d cur_pos_, last_pos_, last_goal_;
+  bool have_last_goal_ = false;
 
   // Values received from callbacks
   quadrotor_common::QuadStateEstimate received_state_est_;

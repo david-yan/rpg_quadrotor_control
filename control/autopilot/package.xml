@@ -22,6 +22,7 @@
   <depend>state_predictor</depend>
   <depend>std_msgs</depend>
   <depend>trajectory_generation_helper</depend>
+  <depend>eigen_conversions</depend>
 
   <export>
     
